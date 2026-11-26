@@ -10,6 +10,7 @@ import (
 	"github.com/git-bug/git-bug/bridge/core"
 	"github.com/git-bug/git-bug/bridge/core/auth"
 	"github.com/git-bug/git-bug/cache"
+	"github.com/git-bug/git-bug/entities/bug"
 	"github.com/git-bug/git-bug/entity"
 	"github.com/git-bug/git-bug/util/text"
 )
@@ -400,7 +401,7 @@ func (gi *githubImporter) ensureTimelineItem(ctx context.Context, repo *cache.Re
 
 func (gi *githubImporter) ensureCommentEdit(ctx context.Context, repo *cache.RepoCache, b *cache.BugCache, ghTargetId githubv4.ID, edit *userContentEdit) error {
 	// find comment
-	target, err := b.ResolveOperationWithMetadata(metaKeyGithubId, parseId(ghTargetId))
+	target, err := resolveEditTarget(b, parseId(ghTargetId))
 	if err != nil {
 		return err
 	}
@@ -582,6 +583,37 @@ func (gi *githubImporter) getGhost(ctx context.Context, repo *cache.RepoCache) (
 }
 
 // parseId converts the unusable githubv4.ID (an interface{}) into a string
+// resolveEditTarget finds the operation an edition from Github applies to:
+// the creation of the issue (for an edition of its body), or a comment.
+//
+// Only those can be the target: other operations may carry the same Github
+// id, as the exporter marks an exported change with the id of what it changed
+// on Github (the issue for a change of title, status, labels or body, the
+// comment for a comment edition).
+func resolveEditTarget(b *cache.BugCache, ghTargetId string) (entity.Id, error) {
+	var matching []entity.Id
+	// Metadata can be added to an operation by a SetMetadataOperation, which only
+	// takes effect when applied. Go through the snapshot to make sure it has been.
+	for _, op := range b.Snapshot().AllOperations() {
+		switch op.(type) {
+		case *bug.CreateOperation, *bug.AddCommentOperation:
+		default:
+			continue
+		}
+		if id, ok := op.GetMetadata(metaKeyGithubId); ok && id == ghTargetId {
+			matching = append(matching, op.Id())
+		}
+	}
+	switch len(matching) {
+	case 0:
+		return "", cache.ErrNoMatchingOp
+	case 1:
+		return matching[0], nil
+	default:
+		return "", entity.NewErrMultipleMatch("operation", matching)
+	}
+}
+
 func parseId(id githubv4.ID) string {
 	return fmt.Sprintf("%v", id)
 }
